@@ -53,7 +53,19 @@ def imshow(inp, title=None):
     plt.pause(0.001)  # pause a bit so that plots are updated
 
 
-def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dataset_sizes, num_epochs=25):
+def get_conceptual_sensitivity(inputs, labels, model, target_ind, tcav_calc, experimental_set_rand):
+    tensors = torch.stack([img for img in inputs])
+    tcav_score = tcav_calc.interpret(inputs=tensors,
+                    experimental_sets=experimental_set_rand,
+                    target=target_ind,
+                    n_steps=5,
+                   )
+    # ts.plot_tcav_scores(experimental_set_rand, tcav_score, layers)
+    return tcav_score
+
+
+def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dataset_sizes, num_epochs=25,
+                include_tcav_loss=False, tcav_calc=None, experimental_set_rand=None):
     since = time.time()
 
     best_model_wts = copy.deepcopy(model.state_dict())
@@ -84,9 +96,18 @@ def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dat
                 # forward
                 # track history if only in train
                 with torch.set_grad_enabled(phase == 'train'):
+                    concept_loss = 0
+                    target_ind = 2  # zebra
+                    if include_tcav_loss:
+                        # Get the conceptual sensitivity loss
+                        concept_loss = get_conceptual_sensitivity(inputs=inputs, labels=labels, model=model,
+                                                                  target_ind=target_ind, tcav_calc=tcav_calc,
+                                                                  experimental_set_rand=experimental_set_rand)
+
+                    # Get the standard loss
                     outputs = model(inputs)
                     _, preds = torch.max(outputs, 1)
-                    loss = criterion(outputs, labels)
+                    loss = criterion(outputs, labels) + concept_loss
 
                     # backward + optimize only if in training phase
                     if phase == 'train':
