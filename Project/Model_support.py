@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import time
 import os
 import copy
+import TCAV_support as ts
 
 cudnn.benchmark = True
 plt.ion()   # interactive mode
@@ -53,19 +54,19 @@ def imshow(inp, title=None):
     plt.pause(0.001)  # pause a bit so that plots are updated
 
 
-def get_conceptual_sensitivity(inputs, labels, model, target_ind, tcav_calc, experimental_set_rand):
-    tensors = torch.stack([img for img in inputs])
+def get_conceptual_sensitivity(inputs, labels, model, target_ind, tcav_calc, experimental_set_rand, device, layers):
+    tensors = torch.stack([img for img in inputs]).to(device)
     tcav_score = tcav_calc.interpret(inputs=tensors,
                     experimental_sets=experimental_set_rand,
                     target=target_ind,
                     n_steps=5,
                    )
-    # ts.plot_tcav_scores(experimental_set_rand, tcav_score, layers)
+    ts.plot_tcav_scores(experimental_set_rand, tcav_score, layers)
     return tcav_score
 
 
 def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dataset_sizes, num_epochs=25,
-                include_tcav_loss=False, tcav_calc=None, experimental_set_rand=None):
+                include_tcav_loss=False, tcav_calc=None, experimental_set_rand=None, layers=None):
     since = time.time()
 
     best_model_wts = copy.deepcopy(model.state_dict())
@@ -102,7 +103,8 @@ def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dat
                         # Get the conceptual sensitivity loss
                         concept_loss = get_conceptual_sensitivity(inputs=inputs, labels=labels, model=model,
                                                                   target_ind=target_ind, tcav_calc=tcav_calc,
-                                                                  experimental_set_rand=experimental_set_rand)
+                                                                  experimental_set_rand=experimental_set_rand,
+                                                                  device=device, layers=layers)
 
                     # Get the standard loss
                     outputs = model(inputs)
