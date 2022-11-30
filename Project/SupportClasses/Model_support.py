@@ -1,44 +1,18 @@
 from __future__ import print_function, division
 
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.optim import lr_scheduler
 import torch.backends.cudnn as cudnn
 import numpy as np
-import torchvision
-from torchvision import datasets, models, transforms
 import matplotlib.pyplot as plt
 import time
-import os
 import copy
-import TCAV_support as ts
 
 cudnn.benchmark = True
 plt.ion()   # interactive mode
 
 
-def return_data_transforms():
-    """
-    Data augmentation and normalization for training.
-    Just normalization for validation.
-    :return: Data transformations.
-    """
-    data_transforms = {
-        'train': transforms.Compose([
-            transforms.RandomResizedCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ]),
-        'val': transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ]),
-    }
-    return data_transforms
+def format_float(f):
+    return float('{:.3f}'.format(f) if abs(f) >= 0.0005 else '{:.3e}'.format(f))
 
 
 def imshow(inp, title=None):
@@ -54,21 +28,11 @@ def imshow(inp, title=None):
     plt.pause(0.001)  # pause a bit so that plots are updated
 
 
-def get_conceptual_sensitivity(inputs, labels, model, target_ind, tcav_calc, experimental_set_rand, device, layers):
-    tensors = torch.stack([img for img in inputs]).to(device)
-    tcav_score = tcav_calc.interpret(inputs=tensors,
-                    experimental_sets=experimental_set_rand,
-                    target=target_ind,
-                    n_steps=5,
-                   )
-    ts.plot_tcav_scores(experimental_set_rand, tcav_score, layers)
-    return tcav_score
-
-
 def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dataset_sizes, num_epochs=25,
-                include_tcav_loss=False, tcav_calc=None, experimental_set_rand=None, layers=None):
+                conceptual_loss=None):
     since = time.time()
 
+    # Method for saving best model weights
     best_model_wts = copy.deepcopy(model.state_dict())
     best_acc = 0.0
 
@@ -97,19 +61,15 @@ def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dat
                 # forward
                 # track history if only in train
                 with torch.set_grad_enabled(phase == 'train'):
-                    concept_loss = 0
-                    target_ind = 2  # zebra
-                    if include_tcav_loss:
-                        # Get the conceptual sensitivity loss
-                        concept_loss = get_conceptual_sensitivity(inputs=inputs, labels=labels, model=model,
-                                                                  target_ind=target_ind, tcav_calc=tcav_calc,
-                                                                  experimental_set_rand=experimental_set_rand,
-                                                                  device=device, layers=layers)
 
                     # Get the standard loss
                     outputs = model(inputs)
                     _, preds = torch.max(outputs, 1)
-                    loss = criterion(outputs, labels) + concept_loss
+                    loss = criterion(outputs, labels)
+
+                    # Add the conceptual loss if it is being used.
+                    if conceptual_loss is not None:
+                        loss += conceptual_loss.get_conceptual_loss(inputs, labels)
 
                     # backward + optimize only if in training phase
                     if phase == 'train':
