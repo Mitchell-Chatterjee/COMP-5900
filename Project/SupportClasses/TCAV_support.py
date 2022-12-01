@@ -1,5 +1,5 @@
 import numpy as np
-from torch import stack
+from torch import stack, ones_like, tensor
 import matplotlib.pyplot as plt
 from captum.concept._utils.common import concepts_to_str
 
@@ -8,15 +8,19 @@ class ConceptualLoss:
     """
     Class used to keep track of elements associated with the conceptual loss
     """
-    def __init__(self, criterion, tcav_model, experimental_set, target_concept_name, target_class_name,
-                 target_class_index, concept_key):
+    def __init__(self, criterion, tcav_model, experimental_sets, target_concept_name,
+                 target_class_name, target_class_index, concept_key, weight_coeff):
         self.criterion = criterion
         self.tcav_model = tcav_model
-        self.experimental_set = experimental_set
+        self.experimental_sets = experimental_sets
         self.target_concept_name = target_concept_name
         self.target_class_name = target_class_name
         self.target_class_index = target_class_index
         self.concept_key = concept_key
+        self.weight_coeff = weight_coeff
+
+        # TODO: Change this when generalizing to multiple experimental sets
+        self.target_concept_index = [item.name for item in self.experimental_sets[0]].index(self.target_concept_name)
 
     def get_tcav_scores(self, inputs, labels):
         # Here we isolate by class
@@ -24,12 +28,12 @@ class ConceptualLoss:
 
         # If there are no images in this batch with the intended target index, return 0.
         if len(target_imgs) == 0:
-            return 0
+            return None
 
         # Now let's calculate the conceptual sensitivity for members of this class in the training batch
         target_tensor = stack([img for img in target_imgs])
         tcav_scores = self.tcav_model.interpret(inputs=target_tensor,
-                                                experimental_sets=self.experimental_set,
+                                                experimental_sets=self.experimental_sets,
                                                 target=self.target_class_index,
                                                 n_steps=5,
                                                 )
@@ -37,12 +41,15 @@ class ConceptualLoss:
 
     def get_conceptual_loss(self, inputs, labels):
         tcav_scores = self.get_tcav_scores(inputs, labels)
+        if tcav_scores is None:
+            return None
 
         # TODO: This needs to be changed to support dynamic arguments
-        val = [format_float(scores['sign_count'][0]) for layer, scores in tcav_scores[self.concept_key].items()]
+        val = tensor([format_float(scores['sign_count'][self.target_concept_index]) for layer, scores in tcav_scores[self.concept_key].items()])
         # TODO: Generalize this for moving away from other concepts
         # This will take the sum over the list and subtract it from the intended perfect score.
-        loss = len(val) - sum(val)
+
+        loss = self.criterion(val, ones_like(val))
         return loss
 
 

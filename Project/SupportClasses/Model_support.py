@@ -32,6 +32,10 @@ def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dat
                 conceptual_loss=None):
     since = time.time()
 
+    # Metrics to collect for graphing
+    accuracy_scores = {'train': [], 'val': []}
+    loss_scores = {'train': [], 'val': []}
+
     # Method for saving best model weights
     best_model_wts = copy.deepcopy(model.state_dict())
     best_acc = 0.0
@@ -48,6 +52,7 @@ def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dat
                 model.eval()   # Set model to evaluate mode
 
             running_loss = 0.0
+            running_conceptual_loss = 0.0
             running_corrects = 0
 
             # Iterate over data.
@@ -69,7 +74,10 @@ def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dat
 
                     # Add the conceptual loss if it is being used.
                     if conceptual_loss is not None:
-                        loss += conceptual_loss.get_conceptual_loss(inputs, labels)
+                        aux_loss = conceptual_loss.get_conceptual_loss(inputs, labels)
+                        running_conceptual_loss += aux_loss
+                        if aux_loss is not None:
+                            loss += aux_loss
 
                     # backward + optimize only if in training phase
                     if phase == 'train':
@@ -83,9 +91,17 @@ def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dat
                 scheduler.step()
 
             epoch_loss = running_loss / dataset_sizes[phase]
-            epoch_acc = running_corrects.double() / dataset_sizes[phase]
+            epoch_acc = (running_corrects.double() / dataset_sizes[phase])*100
 
-            print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
+            # Append the epoch scores to our metrics
+            loss_scores[phase].append(epoch_loss)
+            accuracy_scores[phase].append(epoch_acc)
+
+            if conceptual_loss is not None:
+                epoch_conceptual_loss = running_conceptual_loss / dataset_sizes[phase]
+                print(f'{phase} Loss: {epoch_loss:.4f} | Conceptual Loss: {epoch_conceptual_loss:.4f} | Acc: {epoch_acc:.4f}%')
+            else:
+                print(f'{phase} Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.4f}%')
 
             # deep copy the model
             if phase == 'val' and epoch_acc > best_acc:
@@ -100,7 +116,7 @@ def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dat
 
     # load best model weights
     model.load_state_dict(best_model_wts)
-    return model
+    return model, loss_scores, accuracy_scores
 
 
 def visualize_model(model, device, dataloaders, class_names, num_images=6):
