@@ -68,16 +68,21 @@ def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dat
                 with torch.set_grad_enabled(phase == 'train'):
 
                     # Get the standard loss
-                    outputs = model(inputs)
+                    if phase == 'train':
+                        outputs, aux_outputs_1, aux_outputs_2 = model(inputs)
+                        loss = criterion(outputs, labels) + 0.3*(criterion(aux_outputs_1, labels) + criterion(aux_outputs_2, labels))
+                    else:
+                        outputs = model(inputs)
+                        loss = criterion(outputs, labels)
+
                     _, preds = torch.max(outputs, 1)
-                    loss = criterion(outputs, labels)
 
                     # Add the conceptual loss if it is being used.
                     if conceptual_loss is not None:
                         aux_loss = conceptual_loss.get_conceptual_loss(inputs, labels)
-                        running_conceptual_loss += aux_loss
                         if aux_loss is not None:
                             loss += aux_loss
+                            running_conceptual_loss += aux_loss.item()
 
                     # backward + optimize only if in training phase
                     if phase == 'train':
@@ -95,13 +100,14 @@ def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dat
 
             # Append the epoch scores to our metrics
             loss_scores[phase].append(epoch_loss)
-            accuracy_scores[phase].append(epoch_acc)
+            accuracy_scores[phase].append(epoch_acc.item())
 
             if conceptual_loss is not None:
                 epoch_conceptual_loss = running_conceptual_loss / dataset_sizes[phase]
-                print(f'{phase} Loss: {epoch_loss:.4f} | Conceptual Loss: {epoch_conceptual_loss:.4f} | Acc: {epoch_acc:.4f}%')
+                print(f'{phase} Loss: {epoch_loss:.4f} | Conceptual Loss: {epoch_conceptual_loss:.4f} '
+                      f'| Acc: {epoch_acc:.2f}%')
             else:
-                print(f'{phase} Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.4f}%')
+                print(f'{phase} Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.2f}%')
 
             # deep copy the model
             if phase == 'val' and epoch_acc > best_acc:
@@ -117,6 +123,46 @@ def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dat
     # load best model weights
     model.load_state_dict(best_model_wts)
     return model, loss_scores, accuracy_scores
+
+
+def accuracy_by_class(model, device, dataloaders, criterion, dataset_sizes, class_names):
+    phase = 'val'
+    model.eval()
+    running_loss = 0.0
+    running_corrects = 0
+    per_class_accuracy = {'correct': [0]*len(class_names), 'total':[0]*len(class_names)}
+
+    for inputs, labels in dataloaders[phase]:
+        inputs = inputs.to(device)
+        labels = labels.to(device)
+
+        # Add these to the total
+        for label in labels.data:
+            per_class_accuracy['total'][label] += 1
+
+        # Get the standard loss
+        outputs = model(inputs)
+        _, preds = torch.max(outputs, 1)
+        loss = criterion(outputs, labels)
+
+        # statistics
+        correct = preds == labels.data
+        running_loss += loss.item() * inputs.size(0)
+        running_corrects += torch.sum(correct)
+
+        # Get accuracy by class
+        for label, val in zip(labels.data, correct):
+            per_class_accuracy['correct'][label] += val
+
+    epoch_loss = running_loss / dataset_sizes[phase]
+    epoch_acc = (running_corrects.double() / dataset_sizes[phase]) * 100
+
+    print(f'{phase} Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.2f}%')
+
+    print()
+    print("Per Class Accuracy")
+    for i, (cor, total) in enumerate(zip(per_class_accuracy['correct'], per_class_accuracy['total'])):
+        print(f'Class name: {class_names[i]} | Acc: {(cor / total)*100:.2f}%')
 
 
 def visualize_model(model, device, dataloaders, class_names, num_images=6):

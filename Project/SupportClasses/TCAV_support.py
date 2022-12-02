@@ -1,5 +1,5 @@
 import numpy as np
-from torch import stack, ones_like, tensor
+from torch import stack, ones_like, zeros_like, tensor
 import matplotlib.pyplot as plt
 from captum.concept._utils.common import concepts_to_str
 
@@ -44,12 +44,16 @@ class ConceptualLoss:
         if tcav_scores is None:
             return None
 
-        # TODO: This needs to be changed to support dynamic arguments
-        val = tensor([format_float(scores['sign_count'][self.target_concept_index]) for layer, scores in tcav_scores[self.concept_key].items()])
-        # TODO: Generalize this for moving away from other concepts
-        # This will take the sum over the list and subtract it from the intended perfect score.
+        # This is for the target concept
+        val = [abs(format_float(scores['magnitude'][self.target_concept_index])) for layer, scores in tcav_scores[self.concept_key].items()]
+        # Rescale these values. Attempting to get all layers to be as sensitive as the most sensitive layer.
+        val = tensor([i / max(val) for i in val])
 
-        loss = self.criterion(val, ones_like(val))
+        # Now let's consider reducing the values for the other `useless` concepts
+        alt_val = [abs(format_float(scores['magnitude'][2])) for layer, scores in tcav_scores[self.concept_key].items()]
+        alt_val = tensor([i / max(alt_val) for i in alt_val])
+
+        loss = self.criterion(val, ones_like(val)) + self.criterion(alt_val, zeros_like(alt_val))
         return loss
 
 

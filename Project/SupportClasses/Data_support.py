@@ -1,8 +1,9 @@
-import os
+import os, glob
 from PIL import Image
 import torch
 import torchvision
 from torchvision import transforms
+import matplotlib.pyplot as plt
 
 # .... Captum imports..................
 from captum.concept import Concept
@@ -51,6 +52,18 @@ def get_tensor_from_filename(filename):
     """
     img = Image.open(filename).convert("RGB")
     return transform(img)
+
+
+def load_image_tensors(class_name, root_path='data/tcav/image/imagenet/', transform=True):
+    path = os.path.join(root_path, class_name)
+    filenames = glob.glob(path + '/*.jpg')
+
+    tensors = []
+    for filename in filenames:
+        img = Image.open(filename).convert('RGB')
+        tensors.append(transform(img) if transform else img)
+
+    return tensors
 
 
 def assemble_concept(name, id, concepts_path="data/tcav/image/concepts/"):
@@ -115,3 +128,28 @@ def return_dataloaders(image_datasets, batch_size=4):
     return {x: torch.utils.data.DataLoader(image_datasets[x], batch_size=batch_size, shuffle=True, num_workers=4)
             for x in ['train', 'val']}
 # endregion
+
+
+def plot_metric(num_of_epochs, metric_baseline, metric_augmented, phase, metric_type):
+    phase_label = 'Training'
+    if phase == 'val':
+        phase_label = 'Validation'
+
+    plt.plot([epoch for epoch in range(num_of_epochs)], metric_baseline[phase], label=f'Baseline {phase_label} '
+                                                                                      f'{metric_type}')
+    plt.plot([epoch for epoch in range(num_of_epochs)], metric_augmented[phase], label=f'Augmented {phase_label} '
+                                                                                       f'{metric_type}')
+
+    # Add a legend
+    plt.legend()
+
+    # Add labels
+    plt.xlabel("Epoch Number")
+    plt.ylabel(f"{phase_label} {metric_type}")
+    plt.title(f"Baseline vs Augmented Model: {phase_label} {metric_type}")
+
+    # Show the plot
+    plt.show()
+
+    # Save the figure
+    plt.savefig(f'D:/University/temp/Baseline vs Augmented Model: {phase_label} {metric_type}')
