@@ -57,6 +57,19 @@ class ConceptualLoss:
         return loss
 
 
+def extract_highest_sensitivity_layer(tcav_model, experimental_sets, target_class_tensors, target_class_idx, layers,
+                                      target_concept_index, concept_key):
+    # Run TCAV
+    tcav_scores = tcav_model.interpret(inputs=target_class_tensors,
+                                            experimental_sets=experimental_sets,
+                                            target=target_class_idx,
+                                            n_steps=5)
+    sens_scores = [abs(format_float(scores['sign_count'][target_concept_index])) for layer, scores in
+                   tcav_scores[concept_key].items()]
+    temp = [index for index, score in enumerate(sens_scores) if score == max(sens_scores)][0]
+    return layers[temp]
+
+
 def format_float(f):
     return float('{:.3f}'.format(f) if abs(f) >= 0.0005 else '{:.3e}'.format(f))
 
