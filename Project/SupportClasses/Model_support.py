@@ -68,12 +68,8 @@ def train_model(model, criterion, optimizer, scheduler, device, dataloaders, dat
                 with torch.set_grad_enabled(phase == 'train'):
 
                     # Get the standard loss
-                    if phase == 'train':
-                        outputs, aux_outputs_1, aux_outputs_2 = model(inputs)
-                        loss = criterion(outputs, labels) + 0.3*(criterion(aux_outputs_1, labels) + criterion(aux_outputs_2, labels))
-                    else:
-                        outputs = model(inputs)
-                        loss = criterion(outputs, labels)
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels)
 
                     _, preds = torch.max(outputs, 1)
 
