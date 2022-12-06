@@ -1,5 +1,10 @@
+from collections import defaultdict
+from typing import Dict, cast, Any
+
 import numpy as np
-from torch import stack, ones_like, zeros_like, tensor
+import torch
+from captum._utils.common import _get_module_from_name, _format_tensor_into_tuples
+from torch import stack, ones_like, zeros_like, tensor, Tensor
 import matplotlib.pyplot as plt
 from captum.concept._utils.common import concepts_to_str
 
@@ -40,21 +45,169 @@ class ConceptualLoss:
         return tcav_scores
 
     def get_conceptual_loss(self, inputs, labels):
-        tcav_scores = self.get_tcav_scores(inputs, labels)
-        if tcav_scores is None:
+        # Here we isolate by class
+        target_imgs = [img for (img, label) in zip(inputs, labels) if label == self.target_class_index]
+        # If there are no images in this batch with the intended target index, return 0.
+        if len(target_imgs) == 0:
             return None
+        # Now let's calculate the conceptual sensitivity for members of this class in the training batch
+        target_tensor = stack([img for img in target_imgs])
+
+        tcav_scores = self.compute_cosine_similarity(target_tensor, n_steps=5)
 
         # This is for the target concept
-        val = [abs(format_float(scores['magnitude'][self.target_concept_index])) for layer, scores in tcav_scores[self.concept_key].items()]
-        # Rescale these values. Attempting to get all layers to be as sensitive as the most sensitive layer.
-        val = tensor([i / max(val) for i in val])
+        loss = torch.tensor([abs(format_float(scores['sum_score'][self.target_concept_index])) for layer, scores
+               in tcav_scores[self.concept_key].items()])
 
+        # If the values are greater than the length of the inputs then we have negative cosine similarities.
+        if loss.item() >= len(inputs):
+            return 0
         # Now let's consider reducing the values for the other `useless` concepts
-        alt_val = [abs(format_float(scores['magnitude'][2])) for layer, scores in tcav_scores[self.concept_key].items()]
-        alt_val = tensor([i / max(alt_val) for i in alt_val])
+        # alt_val = [abs(format_float(scores['sum_score'][2])) for layer,
+        # scores in tcav_scores[self.concept_key].items()]
 
-        loss = self.criterion(val, ones_like(val)) + self.criterion(alt_val, zeros_like(alt_val))
-        return loss
+        #  + self.criterion(alt_val, zeros_like(alt_val))
+        return self.weight_coeff * loss.item()
+
+    def compute_cosine_similarity(self, inputs, additional_forward_args=None, **kwargs):
+        self.tcav_model.compute_cavs(experimental_sets=self.experimental_sets)
+
+        scores: Dict[str, Dict[str, Dict[str, Tensor]]] = defaultdict(
+            lambda: defaultdict()
+        )
+
+        # Retrieves the lengths of the experimental sets so that we can sort
+        # them by the length and compute TCAV scores in batches.
+        exp_set_lens = np.array(
+            list(map(lambda exp_set: len(exp_set), self.experimental_sets)), dtype=object
+        )
+        exp_set_lens_arg_sort = np.argsort(exp_set_lens)
+
+        # compute offsets using sorted lengths using their indices
+        exp_set_lens_sort = exp_set_lens[exp_set_lens_arg_sort]
+        exp_set_offsets_bool = [False] + list(
+            exp_set_lens_sort[:-1] == exp_set_lens_sort[1:]
+        )
+        exp_set_offsets = []
+        for i, offset in enumerate(exp_set_offsets_bool):
+            if not offset:
+                exp_set_offsets.append(i)
+
+        exp_set_offsets.append(len(exp_set_lens))
+
+        # sort experimental sets using the length of the concepts in each set
+        experimental_sets_sorted = np.array(self.experimental_sets, dtype=object)[
+            exp_set_lens_arg_sort
+        ]
+
+        for layer in self.tcav_model.layers:
+            layer_module = _get_module_from_name(self.tcav_model.model, layer)
+            self.tcav_model.layer_attr_method.layer = layer_module
+            attribs = self.tcav_model.layer_attr_method.attribute.__wrapped__(  # type: ignore
+                self.tcav_model.layer_attr_method,  # self
+                inputs,
+                target=self.target_class_index,
+                additional_forward_args=additional_forward_args,
+                attribute_to_layer_input=self.tcav_model.attribute_to_layer_input,
+                **kwargs,
+            )
+
+            attribs = _format_tensor_into_tuples(attribs)
+            # n_inputs x n_features
+            attribs = torch.cat(
+                [torch.reshape(attrib, (attrib.shape[0], -1)) for attrib in attribs],
+                dim=1,
+            )
+
+            # n_experiments x n_concepts x n_features
+            cavs = []
+            classes = []
+            for concepts in self.experimental_sets:
+                concepts_key = concepts_to_str(concepts)
+                cavs_stats = cast(Dict[str, Any], self.tcav_model.cavs[concepts_key][layer].stats)
+                cavs.append(cavs_stats["weights"].float().detach().tolist())
+                classes.append(cavs_stats["classes"])
+
+            # sort cavs and classes using the length of the concepts in each set
+            cavs_sorted = np.array(cavs, dtype=object)[exp_set_lens_arg_sort]
+            classes_sorted = np.array(classes, dtype=object)[exp_set_lens_arg_sort]
+            i = 0
+            while i < len(exp_set_offsets) - 1:
+                cav_subset = np.array(
+                    cavs_sorted[exp_set_offsets[i]: exp_set_offsets[i + 1]],
+                    dtype=object,
+                ).tolist()
+                classes_subset = classes_sorted[
+                                 exp_set_offsets[i]: exp_set_offsets[i + 1]
+                                 ].tolist()
+
+                # n_experiments x n_concepts x n_features
+                cav_subset = torch.tensor(cav_subset)
+                cav_subset = cav_subset.to(attribs.device)
+                assert len(cav_subset.shape) == 3, (
+                    "cav should have 3 dimensions: n_experiments x "
+                    "n_concepts x n_features."
+                )
+
+                experimental_subset_sorted = experimental_sets_sorted[
+                                             exp_set_offsets[i]: exp_set_offsets[i + 1]
+                                             ]
+                self.cosine_similarity_subcomputation(
+                    scores,
+                    layer,
+                    attribs,
+                    cav_subset,
+                    classes_subset,
+                    experimental_subset_sorted,
+                )
+                i += 1
+
+        return scores
+
+    def cosine_similarity_subcomputation(self, scores, layer, attribs, cavs, classes,
+                                         experimental_sets):
+        # n_inputs x n_concepts
+        # We normalize the attribs tensor first
+        grad = torch.nn.functional.normalize(attribs.float(), dim=1)
+
+        # Now take the dot product for the cosine similarity
+        cos_sim = torch.matmul(grad, torch.transpose(cavs, 1, 2))
+        assert len(cos_sim.shape) == 3, (
+            "tcav_score should have 3 dimensions: n_experiments x "
+            "n_inputs x n_concepts."
+        )
+
+        assert attribs.shape[0] == cos_sim.shape[1], (
+            "attrib and tcav_score should have the same 1st and "
+            "2nd dimensions respectively (n_inputs)."
+        )
+        # n_experiments x n_concepts
+        # TODO: Make sure all entries are greater than 0
+        sum_score = torch.sum(ones_like(cos_sim) - cos_sim, dim=1)
+
+        # This is our change, instead of computing the mean, we take the sum.
+        magnitude_score = torch.mean(cos_sim, dim=1)
+
+        for i, (cls_set, concepts) in enumerate(zip(classes, experimental_sets)):
+            concepts_key = concepts_to_str(concepts)
+
+            # sort classes / concepts in the order specified in concept_keys
+            concept_ord = [concept.id for concept in concepts]
+            class_ord = {cls_: idx for idx, cls_ in enumerate(cls_set)}
+
+            new_ord = torch.tensor(
+                [class_ord[cncpt] for cncpt in concept_ord], device=cos_sim.device
+            )
+
+            # sort based on classes
+            scores[concepts_key][layer] = {
+                "sum_score": torch.index_select(
+                    sum_score[i, :], dim=0, index=new_ord
+                ),
+                "magnitude": torch.index_select(
+                    magnitude_score[i, :], dim=0, index=new_ord
+                ),
+            }
 
 
 def extract_highest_sensitivity_layer(tcav_model, experimental_sets, target_class_tensors, target_class_idx, layers,
