@@ -27,23 +27,6 @@ class ConceptualLoss:
         # TODO: Change this when generalizing to multiple experimental sets
         self.target_concept_index = [item.name for item in self.experimental_sets[0]].index(self.target_concept_name)
 
-    def get_tcav_scores(self, inputs, labels):
-        # Here we isolate by class
-        target_imgs = [img for (img, label) in zip(inputs, labels) if label == self.target_class_index]
-
-        # If there are no images in this batch with the intended target index, return 0.
-        if len(target_imgs) == 0:
-            return None
-
-        # Now let's calculate the conceptual sensitivity for members of this class in the training batch
-        target_tensor = stack([img for img in target_imgs])
-        tcav_scores = self.tcav_model.interpret(inputs=target_tensor,
-                                                experimental_sets=self.experimental_sets,
-                                                target=self.target_class_index,
-                                                n_steps=5,
-                                                )
-        return tcav_scores
-
     def get_conceptual_loss(self, inputs, labels):
         # Here we isolate by class
         target_imgs = [img for (img, label) in zip(inputs, labels) if label == self.target_class_index]
@@ -56,18 +39,15 @@ class ConceptualLoss:
         tcav_scores = self.compute_cosine_similarity(target_tensor, n_steps=5)
 
         # This is for the target concept
-        loss = torch.tensor([abs(format_float(scores['sum_score'][self.target_concept_index])) for layer, scores
+        val = torch.tensor([abs(format_float(scores['l1_loss'][self.target_concept_index])) for layer, scores
                in tcav_scores[self.concept_key].items()])
 
-        # If the values are greater than the length of the inputs then we have negative cosine similarities.
-        if loss.item() >= len(inputs):
-            return 0
         # Now let's consider reducing the values for the other `useless` concepts
         # alt_val = [abs(format_float(scores['sum_score'][2])) for layer,
         # scores in tcav_scores[self.concept_key].items()]
 
         #  + self.criterion(alt_val, zeros_like(alt_val))
-        return self.weight_coeff * loss.item()
+        return val
 
     def compute_cosine_similarity(self, inputs, additional_forward_args=None, **kwargs):
         self.tcav_model.compute_cavs(experimental_sets=self.experimental_sets)
@@ -182,11 +162,19 @@ class ConceptualLoss:
             "2nd dimensions respectively (n_inputs)."
         )
         # n_experiments x n_concepts
-        # TODO: Make sure all entries are greater than 0
-        sum_score = torch.sum(ones_like(cos_sim) - cos_sim, dim=1)
 
-        # This is our change, instead of computing the mean, we take the sum.
-        magnitude_score = torch.mean(cos_sim, dim=1)
+        # Here is where we should calculate the loss
+        # First we set any negative values to zero
+        cos_sim = torch.nn.functional.relu(cos_sim)
+        # Here we compute L1 loss
+        l1_loss = torch.mean(ones_like(cos_sim) - cos_sim, dim=1)
+
+        temp = torch.split(cos_sim, cos_sim.size(dim=1), dim=2)
+        temp_list = torch.empty(size=l1_loss.shape, device=cos_sim.device)
+        for i, elem in enumerate(temp):
+            # Compute l1
+            tmp = elem[0]
+            temp_list[0][i] = self.criterion(ones_like(elem[0]), elem[0])
 
         for i, (cls_set, concepts) in enumerate(zip(classes, experimental_sets)):
             concepts_key = concepts_to_str(concepts)
@@ -201,13 +189,11 @@ class ConceptualLoss:
 
             # sort based on classes
             scores[concepts_key][layer] = {
-                "sum_score": torch.index_select(
-                    sum_score[i, :], dim=0, index=new_ord
-                ),
-                "magnitude": torch.index_select(
-                    magnitude_score[i, :], dim=0, index=new_ord
-                ),
+                "l1_loss": torch.index_select(
+                    temp_list[i, :], dim=0, index=new_ord
+                )
             }
+
 
 
 def extract_highest_sensitivity_layer(tcav_model, experimental_sets, target_class_tensors, target_class_idx, layers,
