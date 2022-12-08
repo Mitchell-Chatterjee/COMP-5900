@@ -122,8 +122,8 @@ class ConceptualLoss:
         for elem in temp:
             # Here we compute the L1 Loss
             loss = self.weight_coeff * self.criterion(self.agreement_threshold * ones_like(elem[0]), elem[0])
-            loss.requires_grad
-            temp_list.append(self.weight_coeff * self.criterion(self.agreement_threshold * ones_like(elem[0]), elem[0]))
+            loss.requires_grad = True
+            temp_list.append(loss)
 
         return temp_list
 
@@ -178,6 +178,42 @@ def plot_tcav_scores(experimental_sets, tcav_scores, layers):
         _ax = (ax[idx_es] if len(experimental_sets) > 1 else ax)
         for i in range(len(concepts)):
             val = [format_float(scores['sign_count'][i]) for layer, scores in tcav_scores[concept_key].items()]
+            _ax.bar(pos[i], val, width=barWidth, edgecolor='white', label=concepts[i].name)
+
+        # Add xticks on the middle of the group bars
+        _ax.set_xlabel('Set {}'.format(str(idx_es)), fontweight='bold', fontsize=16)
+        _ax.set_xticks([r + 0.3 * barWidth for r in range(len(layers))])
+        _ax.set_xticklabels(layers, fontsize=16)
+
+        # Create legend & Show graphic
+        _ax.legend(fontsize=16)
+
+    plt.show()
+
+
+def plot_tcav_magnitudes(experimental_sets, tcav_scores, layers):
+    """
+    Plots TCAV scores in a graph.
+    :param experimental_sets: The set of concepts we wish to plot.
+    :param tcav_scores: The TCAV scores.
+    :param layers: The layers to check for their score.
+    :return: None.
+    """
+    fig, ax = plt.subplots(1, len(experimental_sets), figsize = (25, 7))
+
+    barWidth = 1 / (len(experimental_sets[0]) + 1)
+
+    for idx_es, concepts in enumerate(experimental_sets):
+
+        concepts = experimental_sets[idx_es]
+        concept_key = concepts_to_str(concepts)
+
+        pos = [np.arange(len(layers))]
+        for i in range(1, len(concepts)):
+            pos.append([(x + barWidth) for x in pos[i-1]])
+        _ax = (ax[idx_es] if len(experimental_sets) > 1 else ax)
+        for i in range(len(concepts)):
+            val = [format_float(scores['magnitude'][i]) for layer, scores in tcav_scores[concept_key].items()]
             _ax.bar(pos[i], val, width=barWidth, edgecolor='white', label=concepts[i].name)
 
         # Add xticks on the middle of the group bars
